@@ -1,0 +1,185 @@
+---
+import AppLayout from "@/layouts/AppLayout.astro";
+import { createClient } from "@/lib/supabase";
+import type { Wilczek, Skladka } from "@/types";
+
+type WilczekRow = Pick<Wilczek, "id" | "imie" | "nazwisko">;
+
+const supabase = createClient(Astro.request.headers, Astro.cookies);
+if (!supabase) return Astro.redirect("/wilczki");
+
+const currentYear = new Date().getFullYear();
+const rokParam = Astro.url.searchParams.get("rok");
+const rok = rokParam ? parseInt(rokParam, 10) : currentYear;
+
+const SORT_COLS = ["wilczek", "zaplacono", "kwota", "data_wplaty"] as const;
+type SortCol = (typeof SORT_COLS)[number];
+const rawSort = Astro.url.searchParams.get("sort") ?? "wilczek";
+const sortBy: SortCol = (SORT_COLS as readonly string[]).includes(rawSort) ? (rawSort as SortCol) : "wilczek";
+const sortDir = Astro.url.searchParams.get("dir") === "desc" ? "desc" : "asc";
+
+const [{ data: wilczki }, { data: skladki }] = await Promise.all([
+  supabase.from("wilczki").select("id, imie, nazwisko").order("nazwisko").order("imie"),
+  supabase.from("skladki").select("*").eq("rok", rok),
+]);
+
+const skladkaMap = new Map<string, Skladka>(((skladki as Skladka[] | null) ?? []).map((s) => [s.wilczek_id, s]));
+
+const typedWilczki: WilczekRow[] = wilczki ?? [];
+let rows = typedWilczki.map((w) => ({
+  wilczek: w,
+  skladka: skladkaMap.get(w.id) ?? null,
+}));
+
+rows.sort((a, b) => {
+  let cmp = 0;
+  if (sortBy === "wilczek") {
+    cmp =
+      a.wilczek.nazwisko.localeCompare(b.wilczek.nazwisko, "pl") || a.wilczek.imie.localeCompare(b.wilczek.imie, "pl");
+  } else if (sortBy === "zaplacono") {
+    const av = a.skladka?.zaplacono ? 1 : 0;
+    const bv = b.skladka?.zaplacono ? 1 : 0;
+    cmp = av - bv;
+  } else if (sortBy === "kwota") {
+    const av = a.skladka?.kwota ?? -1;
+    const bv = b.skladka?.kwota ?? -1;
+    cmp = av - bv;
+  } else {
+    const av = a.skladka?.data_wplaty ?? "";
+    const bv = b.skladka?.data_wplaty ?? "";
+    cmp = av < bv ? -1 : av > bv ? 1 : 0;
+  }
+  return sortDir === "asc" ? cmp : -cmp;
+});
+
+const zaplacono = rows.filter((r) => r.skladka?.zaplacono).length;
+const niezaplacono = rows.filter((r) => !r.skladka?.zaplacono).length;
+
+const lata = Array.from({ length: currentYear - 2023 }, (_, i) => currentYear - i);
+
+function formatDate(iso: string | null) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}.${m}.${y}`;
+}
+
+function sortUrl(col: SortCol) {
+  const defaultDesc = col !== "wilczek";
+  const newDir = sortBy === col ? (sortDir === "asc" ? "desc" : "asc") : defaultDesc ? "desc" : "asc";
+  return `/skladki?rok=${rok}&sort=${col}&dir=${newDir}`;
+}
+
+function sortIcon(col: SortCol) {
+  if (sortBy !== col) return "↕";
+  return sortDir === "asc" ? "↑" : "↓";
+}
+---
+
+<AppLayout title="Składki">
+  <div class="mb-6 flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-gray-900">Składki</h1>
+    <div class="flex items-center gap-3">
+      <label for="rok-select" class="text-sm text-gray-600">Rok:</label>
+      <select
+        id="rok-select"
+        class="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-green-500 focus:ring-2 focus:ring-green-300 focus:outline-none"
+      >
+        {
+          lata.map((r) => (
+            <option value={r} selected={r === rok}>
+              {r}
+            </option>
+          ))
+        }
+      </select>
+    </div>
+  </div>
+
+  <!-- Podsumowanie -->
+  <div class="mb-6 grid gap-4 sm:grid-cols-3">
+    <div class="rounded-lg border border-gray-200 bg-white px-5 py-4 shadow-sm">
+      <div class="text-2xl font-bold text-gray-900">{rows.length}</div>
+      <div class="text-sm text-gray-500">Wilczków łącznie</div>
+    </div>
+    <div class="rounded-lg border border-green-200 bg-green-50 px-5 py-4 shadow-sm">
+      <div class="text-2xl font-bold text-green-700">{zaplacono}</div>
+      <div class="text-sm text-green-600">Zapłaciło</div>
+    </div>
+    <div class="rounded-lg border border-red-200 bg-red-50 px-5 py-4 shadow-sm">
+      <div class="text-2xl font-bold text-red-600">{niezaplacono}</div>
+      <div class="text-sm text-red-500">Nie zapłaciło</div>
+    </div>
+  </div>
+
+  <div class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+        <tr>
+          <th class="px-4 py-3">
+            <a href={sortUrl("wilczek")} class="inline-flex items-center gap-1 hover:text-gray-700">
+              Wilczek <span class="text-gray-400">{sortIcon("wilczek")}</span>
+            </a>
+          </th>
+          <th class="px-4 py-3">
+            <a href={sortUrl("zaplacono")} class="inline-flex items-center gap-1 hover:text-gray-700">
+              Status <span class="text-gray-400">{sortIcon("zaplacono")}</span>
+            </a>
+          </th>
+          <th class="px-4 py-3">
+            <a href={sortUrl("kwota")} class="inline-flex items-center gap-1 hover:text-gray-700">
+              Kwota <span class="text-gray-400">{sortIcon("kwota")}</span>
+            </a>
+          </th>
+          <th class="px-4 py-3">
+            <a href={sortUrl("data_wplaty")} class="inline-flex items-center gap-1 hover:text-gray-700">
+              Data wpłaty <span class="text-gray-400">{sortIcon("data_wplaty")}</span>
+            </a>
+          </th>
+          <th class="px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {
+          rows.map(({ wilczek, skladka }) => (
+            <tr class="transition-colors hover:bg-gray-50">
+              <td class="px-4 py-3 font-medium text-gray-900">
+                <a href={`/wilczki/${wilczek.id}?tab=skladki`} class="hover:underline">
+                  {wilczek.imie} {wilczek.nazwisko}
+                </a>
+              </td>
+              <td class="px-4 py-3">
+                {skladka?.zaplacono ? (
+                  <span class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                    Zapłacono
+                  </span>
+                ) : (
+                  <span class="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-600">
+                    Nie zapłacono
+                  </span>
+                )}
+              </td>
+              <td class="px-4 py-3 text-gray-600">{skladka?.kwota != null ? `${skladka.kwota} zł` : "—"}</td>
+              <td class="px-4 py-3 text-gray-600">{formatDate(skladka?.data_wplaty ?? null)}</td>
+              <td class="px-4 py-3 text-right">
+                <a href={`/wilczki/${wilczek.id}?tab=skladki`} class="text-blue-600 hover:underline">
+                  Zarządzaj
+                </a>
+              </td>
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+  </div>
+</AppLayout>
+
+<script>
+  const select = document.getElementById("rok-select") as HTMLSelectElement;
+  select?.addEventListener("change", () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("rok", select.value);
+    url.searchParams.delete("sort");
+    url.searchParams.delete("dir");
+    window.location.href = url.toString();
+  });
+</script>

@@ -1,0 +1,167 @@
+---
+import AppLayout from "@/layouts/AppLayout.astro";
+import { createClient } from "@/lib/supabase";
+import type { Wilczek, Funkcja } from "@/types";
+
+const supabase = createClient(Astro.request.headers, Astro.cookies);
+
+const SORT_COLS = ["nazwisko", "szostka", "funkcja", "data_urodzenia"] as const;
+type SortCol = (typeof SORT_COLS)[number];
+
+const rawSort = Astro.url.searchParams.get("sort") ?? "nazwisko";
+const sortBy: SortCol = (SORT_COLS as readonly string[]).includes(rawSort) ? (rawSort as SortCol) : "nazwisko";
+const sortDir = Astro.url.searchParams.get("dir") === "desc" ? "desc" : "asc";
+
+let wilczkiQuery = supabase ? supabase.from("wilczki").select("*") : null;
+
+if (wilczkiQuery) {
+  if (sortBy === "data_urodzenia") {
+    wilczkiQuery = wilczkiQuery
+      .order("data_urodzenia", { ascending: sortDir === "asc" })
+      .order("nazwisko")
+      .order("imie");
+  } else if (sortBy === "szostka") {
+    wilczkiQuery = wilczkiQuery
+      .order("szostka", { ascending: sortDir === "asc", nullsFirst: false })
+      .order("nazwisko")
+      .order("imie");
+  } else {
+    // nazwisko (default) and funkcja — DB orders by nazwisko; funkcja is sorted in JS after merge
+    wilczkiQuery = wilczkiQuery
+      .order("nazwisko", { ascending: sortDir === "asc" || sortBy === "funkcja" })
+      .order("imie", { ascending: sortDir === "asc" || sortBy === "funkcja" });
+  }
+}
+
+const [wilczkiRes, funkcjeRes] =
+  supabase && wilczkiQuery
+    ? await Promise.all([wilczkiQuery, supabase.from("funkcje").select("wilczek_id, nazwa").is("data_do", null)])
+    : [{ data: [] as Wilczek[] }, { data: [] as Funkcja[] }];
+
+let wilczki = (wilczkiRes.data ?? []) as Wilczek[];
+const aktualnaFunkcjaMap = new Map(
+  ((funkcjeRes.data ?? []) as Pick<Funkcja, "wilczek_id" | "nazwa">[]).map((f) => [f.wilczek_id, f.nazwa]),
+);
+
+if (sortBy === "funkcja") {
+  wilczki = wilczki.sort((a, b) => {
+    const fa = aktualnaFunkcjaMap.get(a.id) ?? "";
+    const fb = aktualnaFunkcjaMap.get(b.id) ?? "";
+    const cmp = fa.localeCompare(fb, "pl");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+}
+
+function formatDate(iso: string | null) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}.${m}.${y}`;
+}
+
+function sortUrl(col: SortCol) {
+  const newDir = sortBy === col && sortDir === "asc" ? "desc" : "asc";
+  return `/wilczki?sort=${col}&dir=${newDir}`;
+}
+
+function sortIcon(col: SortCol) {
+  if (sortBy !== col) return "↕";
+  return sortDir === "asc" ? "↑" : "↓";
+}
+---
+
+<AppLayout title="Lista wilczków">
+  <div class="mb-6 flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-gray-900">Wilczki</h1>
+    <a
+      href="/wilczki/nowy"
+      class="rounded-md bg-green-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-800"
+    >
+      + Dodaj wilczka
+    </a>
+  </div>
+
+  {
+    wilczki.length > 0 ? (
+      <div class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+            <tr>
+              <th class="px-4 py-3">
+                <a href={sortUrl("nazwisko")} class="inline-flex items-center gap-1 hover:text-gray-700">
+                  Imię i nazwisko <span class="text-gray-400">{sortIcon("nazwisko")}</span>
+                </a>
+              </th>
+              <th class="px-4 py-3">
+                <a href={sortUrl("szostka")} class="inline-flex items-center gap-1 hover:text-gray-700">
+                  Szóstka <span class="text-gray-400">{sortIcon("szostka")}</span>
+                </a>
+              </th>
+              <th class="px-4 py-3">
+                <a href={sortUrl("funkcja")} class="inline-flex items-center gap-1 hover:text-gray-700">
+                  Funkcja <span class="text-gray-400">{sortIcon("funkcja")}</span>
+                </a>
+              </th>
+              <th class="px-4 py-3">
+                <a href={sortUrl("data_urodzenia")} class="inline-flex items-center gap-1 hover:text-gray-700">
+                  Data urodzenia <span class="text-gray-400">{sortIcon("data_urodzenia")}</span>
+                </a>
+              </th>
+              <th class="px-4 py-3" />
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {wilczki.map((w: Wilczek) => (
+              <tr class="transition-colors hover:bg-gray-50">
+                <td class="px-4 py-3 font-medium text-gray-900">
+                  {w.imie} {w.nazwisko}
+                </td>
+                <td class="px-4 py-3 text-gray-600">{w.szostka ?? "—"}</td>
+                <td class="px-4 py-3 text-gray-600">{aktualnaFunkcjaMap.get(w.id) ?? "—"}</td>
+                <td class="px-4 py-3 text-gray-600">{formatDate(w.data_urodzenia)}</td>
+                <td class="px-4 py-3 text-right">
+                  <a href={`/wilczki/${w.id}`} class="mr-3 text-green-700 hover:underline">
+                    Profil
+                  </a>
+                  <a href={`/wilczki/${w.id}/edytuj`} class="mr-3 text-blue-600 hover:underline">
+                    Edytuj
+                  </a>
+                  <button
+                    class="text-red-500 hover:underline"
+                    data-delete-id={w.id}
+                    data-delete-name={`${w.imie} ${w.nazwisko}`}
+                  >
+                    Usuń
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    ) : (
+      <div class="rounded-lg border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">
+        <p class="text-lg">Brak wilczków w bazie.</p>
+        <a href="/wilczki/nowy" class="mt-3 inline-block text-green-700 hover:underline">
+          Dodaj pierwszego wilczka →
+        </a>
+      </div>
+    )
+  }
+</AppLayout>
+
+<script>
+  document.querySelectorAll("[data-delete-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = (btn as HTMLElement).dataset.deleteId!;
+      const name = (btn as HTMLElement).dataset.deleteName!;
+      if (!confirm(`Usuń wilczka „${name}"? Tej operacji nie można cofnąć.`)) return;
+
+      const res = await fetch(`/api/wilczki/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert("Błąd podczas usuwania. Spróbuj ponownie.");
+      }
+    });
+  });
+</script>

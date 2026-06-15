@@ -1,0 +1,166 @@
+---
+import AppLayout from "@/layouts/AppLayout.astro";
+import { createClient } from "@/lib/supabase";
+import type { Sprawnosc } from "@/types";
+
+const supabase = createClient(Astro.request.headers, Astro.cookies);
+if (!supabase) return Astro.redirect("/auth/signin");
+
+interface Przypisanie {
+  sprawnosc_id: string;
+  data_uzyskania: string | null;
+  wilczki: { id: string; imie: string; nazwisko: string };
+}
+
+const [{ data: sprawnosci }, { data: przypisania }] = await Promise.all([
+  supabase.from("sprawnosci").select("*").order("kategoria").order("nazwa"),
+  supabase.from("wilczek_sprawnosci").select("sprawnosc_id, data_uzyskania, wilczki(id, imie, nazwisko)"),
+]);
+
+const byCategory = new Map<string, Sprawnosc[]>();
+for (const s of (sprawnosci as Sprawnosc[] | null) ?? []) {
+  const kat = s.kategoria ?? "Inne";
+  const list = byCategory.get(kat) ?? [];
+  list.push(s);
+  byCategory.set(kat, list);
+}
+const categories = [...byCategory.keys()].sort();
+
+const wilczkiBySprawnosc = new Map<
+  string,
+  { id: string; imie: string; nazwisko: string; data_uzyskania: string | null }[]
+>();
+for (const p of (przypisania as Przypisanie[] | null) ?? []) {
+  const list = wilczkiBySprawnosc.get(p.sprawnosc_id) ?? [];
+  list.push({ ...p.wilczki, data_uzyskania: p.data_uzyskania });
+  wilczkiBySprawnosc.set(p.sprawnosc_id, list);
+}
+for (const [key, list] of wilczkiBySprawnosc) {
+  wilczkiBySprawnosc.set(
+    key,
+    list.sort((a, b) => a.nazwisko.localeCompare(b.nazwisko, "pl") || a.imie.localeCompare(b.imie, "pl")),
+  );
+}
+
+function formatDate(iso: string | null) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}.${m}.${y}`;
+}
+---
+
+<AppLayout title="Słownik sprawności">
+  <div class="mb-6 flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-gray-900">Słownik sprawności</h1>
+    <a
+      href="/sprawnosci/nowa"
+      class="rounded-md bg-green-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-800"
+    >
+      + Dodaj sprawność
+    </a>
+  </div>
+
+  {
+    categories.length === 0 ? (
+      <div class="rounded-lg border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">
+        <p class="text-lg font-medium text-gray-400">Brak sprawności w słowniku</p>
+        <a href="/sprawnosci/nowa" class="mt-2 inline-block text-sm text-green-700 hover:underline">
+          Dodaj pierwszą sprawność →
+        </a>
+      </div>
+    ) : (
+      <div class="space-y-6">
+        {categories.map((kat) => (
+          <div class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+            <div class="border-b border-gray-100 bg-gray-50 px-5 py-3">
+              <h2 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">{kat}</h2>
+            </div>
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-gray-100">
+                {(byCategory.get(kat) ?? []).map((s: Sprawnosc) => {
+                  const posiadacze = wilczkiBySprawnosc.get(s.id) ?? [];
+                  return (
+                    <>
+                      <tr class="transition-colors hover:bg-gray-50">
+                        <td class="px-5 py-3 font-medium text-gray-900">
+                          <button
+                            data-toggle={s.id}
+                            class="mr-2 inline-flex h-5 w-5 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-600"
+                            title="Rozwiń listę wilczków"
+                          >
+                            ▶
+                          </button>
+                          {s.nazwa}
+                        </td>
+                        <td class="px-5 py-3 text-gray-500">{s.opis ?? "—"}</td>
+                        <td class="px-5 py-3 text-right whitespace-nowrap">
+                          <span class="mr-4 text-xs text-gray-400">{posiadacze.length} wilczków</span>
+                          <a href={`/sprawnosci/${s.id}/edytuj`} class="mr-4 text-blue-600 hover:underline">
+                            Edytuj
+                          </a>
+                          <button class="text-red-500 hover:underline" data-delete-id={s.id} data-delete-name={s.nazwa}>
+                            Usuń
+                          </button>
+                        </td>
+                      </tr>
+                      <tr id={`details-${s.id}`} class="hidden">
+                        <td colspan="3" class="bg-gray-50 px-5 py-3">
+                          {posiadacze.length === 0 ? (
+                            <p class="text-xs text-gray-400">Żaden wilczek nie posiada tej sprawności.</p>
+                          ) : (
+                            <ul class="flex flex-wrap gap-2">
+                              {posiadacze.map((w) => (
+                                <li>
+                                  <a
+                                    href={`/wilczki/${w.id}?tab=sprawnosci`}
+                                    class="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-700 transition-colors hover:border-green-400 hover:text-green-700"
+                                  >
+                                    {w.imie} {w.nazwisko}
+                                    {w.data_uzyskania && (
+                                      <span class="text-gray-400">{formatDate(w.data_uzyskania)}</span>
+                                    )}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </td>
+                      </tr>
+                    </>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+    )
+  }
+</AppLayout>
+
+<script>
+  document.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = (btn as HTMLElement).dataset.toggle!;
+      const row = document.getElementById(`details-${id}`)!;
+      const isNowHidden = row.classList.toggle("hidden");
+      btn.textContent = isNowHidden ? "▶" : "▼";
+    });
+  });
+
+  document.querySelectorAll("[data-delete-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = (btn as HTMLElement).dataset.deleteId!;
+      const name = (btn as HTMLElement).dataset.deleteName!;
+      if (!confirm(`Usuń sprawność „${name}"? Usunięcie usunie też wszystkie przypisania tej sprawności do wilczków.`))
+        return;
+
+      const res = await fetch(`/api/sprawnosci/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert("Błąd podczas usuwania. Spróbuj ponownie.");
+      }
+    });
+  });
+</script>

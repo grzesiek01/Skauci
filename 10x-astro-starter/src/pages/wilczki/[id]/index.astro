@@ -1,0 +1,541 @@
+---
+import AppLayout from "@/layouts/AppLayout.astro";
+import { createClient } from "@/lib/supabase";
+import type { Wilczek, Rodzic, Zbiorka, Obecnosc, Skladka, Sprawnosc, WilczekSprawnosc, Funkcja } from "@/types";
+
+const { id } = Astro.params;
+const tab = Astro.url.searchParams.get("tab") ?? "dane";
+
+const supabase = createClient(Astro.request.headers, Astro.cookies);
+if (!supabase) return Astro.redirect("/wilczki");
+
+const { data: wilczek, error } = await supabase.from("wilczki").select("*").eq("id", id).single<Wilczek>();
+
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+if (error || !wilczek) return Astro.redirect("/wilczki");
+
+const { data: rodzice } = (await supabase.from("rodzice").select("*").eq("wilczek_id", id).order("relacja")) as {
+  data: Rodzic[] | null;
+};
+
+let zbiorki: Zbiorka[] | null = null;
+let obecnosciWilczka: Obecnosc[] | null = null;
+let skladki: Skladka[] | null = null;
+let wilczekSprawnosci: (WilczekSprawnosc & { sprawnosci: Sprawnosc })[] | null = null;
+let funkcje: Funkcja[] | null = null;
+
+// prettier-ignore
+if (tab === "obecnosci") {
+  const [zbiorkiRes, obecnosciRes] = await Promise.all([
+    supabase.from("zbiorki").select("*").order("data", { ascending: false }),
+    supabase.from("obecnosci").select("*").eq("wilczek_id", id),
+  ]);
+  zbiorki = zbiorkiRes.data as Zbiorka[] | null;
+  obecnosciWilczka = obecnosciRes.data as Obecnosc[] | null;
+}
+
+// prettier-ignore
+if (tab === "skladki") {
+  const skladkiRes = await supabase.from("skladki").select("*").eq("wilczek_id", id).order("rok", { ascending: false });
+  skladki = skladkiRes.data as Skladka[] | null;
+}
+
+// prettier-ignore
+if (tab === "sprawnosci") {
+  const res = await supabase.from("wilczek_sprawnosci").select("*, sprawnosci(*)").eq("wilczek_id", id).order("data_uzyskania", { ascending: false });
+  wilczekSprawnosci = res.data as (WilczekSprawnosc & { sprawnosci: Sprawnosc })[] | null;
+}
+
+// prettier-ignore
+if (tab === "funkcje") {
+  const res = await supabase.from("funkcje").select("*").eq("wilczek_id", id).order("data_od", { ascending: false });
+  funkcje = res.data as Funkcja[] | null;
+}
+
+const sprawnosccByKat = new Map<string, (WilczekSprawnosc & { sprawnosci: Sprawnosc })[]>();
+for (const ws of wilczekSprawnosci ?? []) {
+  const kat = ws.sprawnosci.kategoria ?? "Inne";
+  const list = sprawnosccByKat.get(kat) ?? [];
+  list.push(ws);
+  sprawnosccByKat.set(kat, list);
+}
+const sprawnosccKats = [...sprawnosccByKat.keys()].sort();
+
+const obecnoscMap = new Map((obecnosciWilczka ?? []).map((o) => [o.zbiorka_id, o.obecny]));
+const totalZbiorki = zbiorki?.length ?? 0;
+const liczbaObecnych = (zbiorki ?? []).filter((z) => obecnoscMap.get(z.id) === true).length;
+const procent = totalZbiorki > 0 ? Math.round((liczbaObecnych / totalZbiorki) * 100) : 0;
+
+const tabs = [
+  { id: "dane", label: "Dane" },
+  { id: "sprawnosci", label: "Sprawności" },
+  { id: "funkcje", label: "Funkcje" },
+  { id: "obecnosci", label: "Obecności" },
+  { id: "skladki", label: "Składki" },
+] as const;
+
+function formatDate(iso: string | null) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}.${m}.${y}`;
+}
+
+function formatRelacja(r: string | null) {
+  if (!r) return "—";
+  const map: Record<string, string> = { matka: "Matka", ojciec: "Ojciec", opiekun: "Opiekun" };
+  return map[r] ?? r;
+}
+---
+
+<AppLayout title={`${wilczek.imie} ${wilczek.nazwisko}`}>
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <a href="/wilczki" class="mb-1 inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+        ← Powrót do listy
+      </a>
+      <h1 class="text-2xl font-bold text-gray-900">{wilczek.imie} {wilczek.nazwisko}</h1>
+    </div>
+    <a
+      href={`/wilczki/${wilczek.id}/edytuj`}
+      class="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+    >
+      Edytuj dane
+    </a>
+  </div>
+
+  <!-- Zakładki -->
+  <div class="mb-6 border-b border-gray-200">
+    <nav class="-mb-px flex gap-6">
+      {
+        tabs.map((t) => (
+          <a
+            href={`/wilczki/${wilczek.id}?tab=${t.id}`}
+            class:list={[
+              "pb-3 text-sm font-medium transition-colors",
+              tab === t.id ? "border-b-2 border-green-700 text-green-700" : "text-gray-500 hover:text-gray-700",
+            ].join(" ")}
+          >
+            {t.label}
+          </a>
+        ))
+      }
+    </nav>
+  </div>
+
+  <!-- Dane osobowe -->
+  {
+    tab === "dane" && (
+      <div class="space-y-6">
+        <div class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+          <h2 class="mb-4 text-sm font-semibold tracking-wide text-gray-500 uppercase">Dane osobowe</h2>
+          <dl class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <dt class="text-xs text-gray-500">Imię i nazwisko</dt>
+              <dd class="mt-0.5 font-medium text-gray-900">
+                {wilczek.imie} {wilczek.nazwisko}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">Data urodzenia</dt>
+              <dd class="mt-0.5 text-gray-900">{formatDate(wilczek.data_urodzenia)}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">PESEL</dt>
+              <dd class="mt-0.5 font-mono text-gray-900">{wilczek.pesel ?? "—"}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">Ulica</dt>
+              <dd class="mt-0.5 text-gray-900">{wilczek.ulica ?? "—"}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">Miejscowość</dt>
+              <dd class="mt-0.5 text-gray-900">{wilczek.miasto ?? "—"}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-gray-500">Kod pocztowy</dt>
+              <dd class="mt-0.5 text-gray-900">{wilczek.kod_pocztowy ?? "—"}</dd>
+            </div>
+          </dl>
+        </div>
+
+        {/* Rodzice / Opiekunowie */}
+        <div class="rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+            <h2 class="text-sm font-semibold tracking-wide text-gray-500 uppercase">Rodzice / Opiekunowie</h2>
+            {(!rodzice || rodzice.length < 2) && (
+              <a
+                href={`/wilczki/${wilczek.id}/rodzic/nowy`}
+                class="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-800"
+              >
+                + Dodaj
+              </a>
+            )}
+          </div>
+
+          {rodzice && rodzice.length > 0 ? (
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3">Relacja</th>
+                  <th class="px-4 py-3">Imię i nazwisko</th>
+                  <th class="px-4 py-3">Telefon</th>
+                  <th class="px-4 py-3">E-mail</th>
+                  <th class="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                {rodzice.map((r: Rodzic) => (
+                  <tr class="transition-colors hover:bg-gray-50">
+                    <td class="px-4 py-3 text-gray-600">{formatRelacja(r.relacja)}</td>
+                    <td class="px-4 py-3 font-medium text-gray-900">
+                      {r.imie} {r.nazwisko}
+                    </td>
+                    <td class="px-4 py-3 text-gray-600">{r.telefon ?? "—"}</td>
+                    <td class="px-4 py-3 text-gray-600">{r.email ?? "—"}</td>
+                    <td class="px-4 py-3 text-right">
+                      <a
+                        href={`/wilczki/${wilczek.id}/rodzic/${r.id}/edytuj`}
+                        class="mr-3 text-blue-600 hover:underline"
+                      >
+                        Edytuj
+                      </a>
+                      <button
+                        class="text-red-500 hover:underline"
+                        data-delete-rodzic-id={r.id}
+                        data-delete-rodzic-name={`${r.imie} ${r.nazwisko}`}
+                      >
+                        Usuń
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div class="px-6 py-8 text-center text-sm text-gray-500">Brak przypisanych rodziców / opiekunów.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  <!-- Sprawności -->
+  {
+    tab === "sprawnosci" && (
+      <div class="space-y-4">
+        <div class="flex justify-end">
+          <a
+            href={`/wilczki/${wilczek.id}/sprawnosc/nowa`}
+            class="rounded-md bg-green-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-800"
+          >
+            + Przypisz sprawność
+          </a>
+        </div>
+        {(wilczekSprawnosci ?? []).length === 0 ? (
+          <div class="rounded-lg border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">
+            <p class="text-lg font-medium text-gray-400">Brak przypisanych sprawności</p>
+            <a
+              href={`/wilczki/${wilczek.id}/sprawnosc/nowa`}
+              class="mt-2 inline-block text-sm text-green-700 hover:underline"
+            >
+              Przypisz pierwszą sprawność →
+            </a>
+          </div>
+        ) : (
+          <div class="space-y-4">
+            {sprawnosccKats.map((kat) => (
+              <div class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+                <div class="border-b border-gray-100 bg-gray-50 px-5 py-3">
+                  <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">{kat}</h3>
+                </div>
+                <table class="w-full text-sm">
+                  <tbody class="divide-y divide-gray-100">
+                    {(sprawnosccByKat.get(kat) ?? []).map((ws) => (
+                      <tr class="transition-colors hover:bg-gray-50">
+                        <td class="px-5 py-3 font-medium text-gray-900">{ws.sprawnosci.nazwa}</td>
+                        <td class="px-5 py-3 text-gray-500">
+                          {ws.data_uzyskania ? formatDate(ws.data_uzyskania) : "—"}
+                        </td>
+                        <td class="px-5 py-3 text-right">
+                          <button
+                            class="text-red-500 hover:underline"
+                            data-delete-ws-id={ws.id}
+                            data-delete-ws-name={ws.sprawnosci.nazwa}
+                          >
+                            Usuń
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  <!-- Funkcje -->
+  {
+    tab === "funkcje" && (
+      <div class="space-y-4">
+        <div class="rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+            <h2 class="text-sm font-semibold tracking-wide text-gray-500 uppercase">Historia funkcji</h2>
+            <a
+              href={`/wilczki/${wilczek.id}/funkcja/nowa`}
+              class="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-800"
+            >
+              + Dodaj funkcję
+            </a>
+          </div>
+          {funkcje && funkcje.length > 0 ? (
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3">Funkcja</th>
+                  <th class="px-4 py-3">Od</th>
+                  <th class="px-4 py-3">Do</th>
+                  <th class="px-4 py-3">Status</th>
+                  <th class="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                {funkcje.map((f: Funkcja) => (
+                  <tr class="transition-colors hover:bg-gray-50">
+                    <td class="px-4 py-3 font-medium text-gray-900">{f.nazwa}</td>
+                    <td class="px-4 py-3 text-gray-600">{formatDate(f.data_od)}</td>
+                    <td class="px-4 py-3 text-gray-600">{f.data_do ? formatDate(f.data_do) : "—"}</td>
+                    <td class="px-4 py-3">
+                      {!f.data_do ? (
+                        <span class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                          Aktualnie pełni
+                        </span>
+                      ) : (
+                        <span class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600">
+                          Zakończona
+                        </span>
+                      )}
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                      <a
+                        href={`/wilczki/${wilczek.id}/funkcja/${f.id}/edytuj`}
+                        class="mr-3 text-blue-600 hover:underline"
+                      >
+                        Edytuj
+                      </a>
+                      <button
+                        class="text-red-500 hover:underline"
+                        data-delete-funkcja-id={f.id}
+                        data-delete-funkcja-name={f.nazwa}
+                      >
+                        Usuń
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div class="px-6 py-8 text-center text-sm text-gray-500">Brak zarejestrowanych funkcji.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  <!-- Obecności -->
+  {
+    tab === "obecnosci" && (
+      <div class="space-y-4">
+        {totalZbiorki > 0 ? (
+          <>
+            <div class="flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-5 py-4 shadow-sm">
+              <div class="text-2xl font-bold text-gray-900">{procent}%</div>
+              <div class="text-sm text-gray-500">
+                frekwencja ({liczbaObecnych} / {totalZbiorki} zbiórek)
+              </div>
+            </div>
+
+            <div class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+              <table class="w-full text-sm">
+                <thead class="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+                  <tr>
+                    <th class="px-4 py-3">Data</th>
+                    <th class="px-4 py-3">Temat</th>
+                    <th class="px-4 py-3">Obecność</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                  {(zbiorki ?? []).map((z: Zbiorka) => {
+                    const obecny = obecnoscMap.get(z.id);
+                    return (
+                      <tr class="transition-colors hover:bg-gray-50">
+                        <td class="px-4 py-3 font-medium text-gray-900">{formatDate(z.data)}</td>
+                        <td class="px-4 py-3 text-gray-600">{z.temat ?? "—"}</td>
+                        <td class="px-4 py-3">
+                          {obecny === true ? (
+                            <span class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                              Obecny
+                            </span>
+                          ) : obecny === false ? (
+                            <span class="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-600">
+                              Nieobecny
+                            </span>
+                          ) : (
+                            <span class="text-xs text-gray-400">Nie oznaczono</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <div class="rounded-lg border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">
+            <p class="text-lg font-medium text-gray-400">Brak zbiórek</p>
+            <a href="/zbiorki/nowa" class="mt-2 inline-block text-sm text-green-700 hover:underline">
+              Dodaj pierwszą zbiórkę →
+            </a>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  <!-- Składki -->
+  {
+    tab === "skladki" && (
+      <div class="space-y-4">
+        <div class="rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+            <h2 class="text-sm font-semibold tracking-wide text-gray-500 uppercase">Historia składek</h2>
+            <a
+              href={`/wilczki/${wilczek.id}/skladka/nowa`}
+              class="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-800"
+            >
+              + Dodaj rok
+            </a>
+          </div>
+
+          {skladki && skladki.length > 0 ? (
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3">Rok</th>
+                  <th class="px-4 py-3">Status</th>
+                  <th class="px-4 py-3">Kwota</th>
+                  <th class="px-4 py-3">Data wpłaty</th>
+                  <th class="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                {skladki.map((s: Skladka) => (
+                  <tr class="transition-colors hover:bg-gray-50">
+                    <td class="px-4 py-3 font-medium text-gray-900">{s.rok}</td>
+                    <td class="px-4 py-3">
+                      {s.zaplacono ? (
+                        <span class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                          Zapłacono
+                        </span>
+                      ) : (
+                        <span class="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-600">
+                          Nie zapłacono
+                        </span>
+                      )}
+                    </td>
+                    <td class="px-4 py-3 text-gray-600">{s.kwota != null ? `${s.kwota} zł` : "—"}</td>
+                    <td class="px-4 py-3 text-gray-600">{formatDate(s.data_wplaty)}</td>
+                    <td class="px-4 py-3 text-right">
+                      <a
+                        href={`/wilczki/${wilczek.id}/skladka/${s.id}/edytuj`}
+                        class="mr-3 text-blue-600 hover:underline"
+                      >
+                        Edytuj
+                      </a>
+                      <button
+                        class="text-red-500 hover:underline"
+                        data-delete-skladka-id={s.id}
+                        data-delete-skladka-rok={s.rok}
+                      >
+                        Usuń
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div class="px-6 py-8 text-center text-sm text-gray-500">Brak zarejestrowanych składek.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+</AppLayout>
+
+<script>
+  document.querySelectorAll("[data-delete-rodzic-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = (btn as HTMLElement).dataset.deleteRodzicId!;
+      const name = (btn as HTMLElement).dataset.deleteRodzicName!;
+      if (!confirm(`Usuń rodzica „${name}"? Tej operacji nie można cofnąć.`)) return;
+
+      const res = await fetch(`/api/rodzice/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert("Błąd podczas usuwania. Spróbuj ponownie.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-skladka-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = (btn as HTMLElement).dataset.deleteSkladkaId!;
+      const rok = (btn as HTMLElement).dataset.deleteSkladkaRok!;
+      if (!confirm(`Usuń składkę za rok ${rok}? Tej operacji nie można cofnąć.`)) return;
+
+      const res = await fetch(`/api/skladki/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert("Błąd podczas usuwania. Spróbuj ponownie.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-ws-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = (btn as HTMLElement).dataset.deleteWsId!;
+      const name = (btn as HTMLElement).dataset.deleteWsName!;
+      if (!confirm(`Usuń sprawność „${name}"? Tej operacji nie można cofnąć.`)) return;
+
+      const res = await fetch(`/api/wilczek-sprawnosci/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert("Błąd podczas usuwania. Spróbuj ponownie.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-funkcja-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = (btn as HTMLElement).dataset.deleteFunkcjaId!;
+      const name = (btn as HTMLElement).dataset.deleteFunkcjaName!;
+      if (!confirm(`Usuń funkcję „${name}"? Tej operacji nie można cofnąć.`)) return;
+
+      const res = await fetch(`/api/funkcje/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        alert("Błąd podczas usuwania. Spróbuj ponownie.");
+      }
+    });
+  });
+</script>
